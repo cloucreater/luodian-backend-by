@@ -1,34 +1,119 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
+# main.py
+import os
 
-from database import engine, Base
-from routers import user, article, comment, favorite, post, ai
-from config import settings
+from flask import Flask, jsonify, send_from_directory
+from flask_cors import CORS
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield
+from database import db
 
-app = FastAPI(title='非遗螺钿文化平台 API', version='1.0.0', lifespan=lifespan)
+def create_app():
+    """创建应用并注册所有蓝图"""
+    app = Flask(__name__)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=['http://localhost:3000', 'http://127.0.0.1:3000'],
-    allow_credentials=True,
-    allow_methods=['*'],
-    allow_headers=['*'],
-)
+    # 数据库配置：优先读取环境变量，默认使用 SQLite
+    app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///app.db")
+    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-app.include_router(user.router, prefix='/api/user', tags=['用户'])
-app.include_router(article.router, prefix='/api/articles', tags=['文章'])
-app.include_router(comment.router, prefix='/api/comments', tags=['评论'])
-app.include_router(favorite.router, prefix='/api/favorites', tags=['收藏'])
-app.include_router(post.router, prefix='/api/posts', tags=['动态'])
-app.include_router(ai.router, prefix='/api/ai', tags=['AI'])
+    # 上传目录配置
+    app.config["UPLOAD_FOLDER"] = os.path.join(os.getcwd(), "uploads")
+    os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
-@app.get('/')
-async def root():
-    return {'message': '螺钿文化平台 API 已启动'}
+    # 开启跨域
+    CORS(app, supports_credentials=True)
+
+    # 初始化数据库
+    db.init_app(app)
+
+    # 注册已有模块
+    try:
+        from auth import auth_bp
+        app.register_blueprint(auth_bp)
+    except Exception as exc:
+        print(f"[WARN] auth_bp register failed: {exc}")
+
+    try:
+        from .routers import user
+        from routers.user import user_bp
+        app.register_blueprint(user_bp)
+    except Exception as exc:
+        print(f"[WARN] user_bp register failed: {exc}")
+
+    try:
+        from routers import article
+        from routers.article import article_bp
+        app.register_blueprint(article_bp)
+    except Exception as exc:
+        print(f"[WARN] article_bp register failed: {exc}")
+
+    try:
+        from routers import comment
+        from routers.comment import comment_bp
+        app.register_blueprint(comment_bp)
+    except Exception as exc:
+        print(f"[WARN] comment_bp register failed: {exc}")
+
+    try:
+        from routers import favorite
+        from routers.favorite import favorite_bp
+        app.register_blueprint(favorite_bp)
+    except Exception as exc:
+        print(f"[WARN] favorite_bp register failed: {exc}")
+
+    try:
+        from routers import post
+        from routers.post import post_bp
+        app.register_blueprint(post_bp)
+    except Exception as exc:
+        print(f"[WARN] post_bp register failed: {exc}")
+
+    try:
+        from routers import ai
+        from routers.ai import ai_bp
+        app.register_blueprint(ai_bp)
+    except Exception as exc:
+        print(f"[WARN] ai_bp register failed: {exc}")
+
+    # 注册新增模块
+    from routers import knowledge
+    from routers.knowledge import knowledge_bp, init_default_knowledge
+    from routers import  inheritor
+    from routers.inheritor import inheritor_bp, init_default_inheritors
+    from routers import ar
+    from routers.ar import ar_bp
+    from routers import master
+    from routers.master import master_bp
+
+    app.register_blueprint(knowledge_bp)
+    app.register_blueprint(inheritor_bp)
+    app.register_blueprint(ar_bp)
+    app.register_blueprint(master_bp)
+
+    @app.route("/", methods=["GET"])
+    def index():
+        """根路由健康检查"""
+        return jsonify({
+            "code": 200,
+            "msg": "success",
+            "data": "Flask backend is running"
+        })
+
+    @app.route("/uploads/<path:filename>", methods=["GET"])
+    def uploaded_file(filename):
+        """提供上传文件访问能力"""
+        return send_from_directory(app.config["UPLOAD_FOLDER"], filename)
+
+    with app.app_context():
+        # 确保模型加载后自动建表
+        import models  # noqa: F401
+        db.create_all()
+
+        # 初始化默认数据
+        init_default_knowledge()
+        init_default_inheritors()
+
+    return app
+
+app = create_app()
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
