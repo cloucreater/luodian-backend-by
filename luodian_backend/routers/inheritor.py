@@ -1,93 +1,191 @@
-# inheritor.py
-from flask import Blueprint, jsonify, request
-
+import os
+import uuid
+from flask import Blueprint, request, jsonify, current_app
+from werkzeug.utils import secure_filename
 from database import db
 from models import Inheritor
+from auth_utils import admin_required
 
 inheritor_bp = Blueprint("inheritor", __name__, url_prefix="/api/inheritor")
 
-DEFAULT_INHERITORS = [
-    {
-        "name": "邵益达",
-        "title": "螺钿工艺代表性传承人",
-        "level": "国家级",
-        "avatar": "/uploads/default/inheritor_1.png",
-        "video_url": "/uploads/default/inheritor_1.mp4",
-        "description": "长期从事螺钿工艺保护、研究与传承，注重传统技法与现代传播结合。",
-        "achievement": "参与多项非遗展示、教学和工艺创新工作。",
-    },
-    {
-        "name": "李明",
-        "title": "螺钿工艺市级传承人",
-        "level": "市级",
-        "avatar": "/uploads/default/inheritor_2.png",
-        "video_url": "/uploads/default/inheritor_2.mp4",
-        "description": "擅长螺片切割、镶嵌和漆面处理，长期开展社区非遗教学。",
-        "achievement": "推动螺钿工艺进入校园和公共文化空间。",
-    },
-    {
-        "name": "陈雅",
-        "title": "青年螺钿工艺创作者",
-        "level": "新锐",
-        "avatar": "/uploads/default/inheritor_3.png",
-        "video_url": "/uploads/default/inheritor_3.mp4",
-        "description": "关注数字化展示与文创设计，将螺钿纹样应用于现代生活用品。",
-        "achievement": "参与螺钿数字化传播与文创设计项目。",
-    },
-]
-
+# ---------- 通用 ----------
 def success(data=None, msg="success"):
-    """统一成功返回"""
     return jsonify({"code": 200, "msg": msg, "data": data})
 
 def fail(msg="请求失败", code=400):
-    """统一失败返回"""
     return jsonify({"code": code, "msg": msg, "data": None}), code
 
-def init_default_inheritors():
-    """初始化默认传承人数据"""
-    for item in DEFAULT_INHERITORS:
-        exists = Inheritor.query.filter_by(name=item["name"]).first()
-        if not exists:
-            db.session.add(Inheritor(
-                name=item["name"],
-                title=item["title"],
-                level=item["level"],
-                avatar=item["avatar"],
-                video_url=item["video_url"],
-                description=item["description"],
-                achievement=item["achievement"],
-            ))
-    db.session.commit()
+def allowed_image(filename):
+    ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+    return ext in {'png', 'jpg', 'jpeg', 'gif', 'webp'}
 
+def allowed_video(filename):
+    ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+    return ext in {'mp4', 'mov', 'avi', 'webm'}
+
+# ---------- 文件上传（管理员）----------
+@inheritor_bp.route("/upload", methods=["POST"])
+@admin_required
+def upload_file(current_user):
+    if "file" not in request.files:
+        return fail("请上传文件")
+    file = request.files["file"]
+    if file.filename == "":
+        return fail("文件名为空")
+    if allowed_image(file.filename):
+        subdir = "avatars"
+    elif allowed_video(file.filename):
+        subdir = "videos"
+    else:
+        return fail("不支持的文件类型，仅支持图片或视频")
+    upload_folder = current_app.config.get("UPLOAD_FOLDER", "uploads")
+    target_dir = os.path.join(upload_folder, "inheritor", subdir)
+    os.makedirs(target_dir, exist_ok=True)
+    ext = secure_filename(file.filename).rsplit('.', 1)[1].lower()
+    new_name = f"{uuid.uuid4().hex}.{ext}"
+    save_path = os.path.join(target_dir, new_name)
+    file.save(save_path)
+    file_url = f"/uploads/inheritor/{subdir}/{new_name}"
+    return success({"url": file_url, "name": new_name}, "上传成功")
+
+# ---------- 前台展示接口 ----------
 @inheritor_bp.route("/list", methods=["GET"])
 def list_inheritors():
-    """获取传承人列表，支持 keyword 和 level 搜索"""
+    page = request.args.get("page", 1, type=int)
+    size = request.args.get("size", 10, type=int)
     keyword = request.args.get("keyword", "").strip()
     level = request.args.get("level", "").strip()
-
     query = Inheritor.query
-
     if keyword:
-        query = query.filter(
-            db.or_(
-                Inheritor.name.contains(keyword),
-                Inheritor.title.contains(keyword),
-                Inheritor.description.contains(keyword),
-                Inheritor.level.contains(keyword),
-            )
-        )
-
+        query = query.filter(Inheritor.name.contains(keyword))
     if level:
-        query = query.filter(Inheritor.level.contains(level))
+        query = query.filter(Inheritor.level == level)
+    paginated = query.order_by(Inheritor.id.asc()).paginate(page=page, per_page=size, error_out=False)
+    return success({
+        "total": paginated.total,
+        "pages": paginated.pages,
+        "current": page,
+        "items": [item.to_dict() for item in paginated.items]
+    })
 
-    return success([item.to_dict() for item in query.order_by(Inheritor.id.asc()).all()])
+@inheritor_bp.route("/national", methods=["GET"])
+def get_national():
+    name = request.args.get("name", "").strip()
+    query = Inheritor.query.filter_by(level="国家级")
+    if name:
+        query = query.filter(Inheritor.name.contains(name))
+    items = query.all()
+    return success([item.to_dict() for item in items])
+
+@inheritor_bp.route("/provincial", methods=["GET"])
+def get_provincial():
+    name = request.args.get("name", "").strip()
+    query = Inheritor.query.filter_by(level="省级")
+    if name:
+        query = query.filter(Inheritor.name.contains(name))
+    items = query.all()
+    return success([item.to_dict() for item in items])
+
+@inheritor_bp.route("/city-level", methods=["GET"])
+def get_city_level():
+    name = request.args.get("name", "").strip()
+    query = Inheritor.query.filter_by(level="市级")
+    if name:
+        query = query.filter(Inheritor.name.contains(name))
+    items = query.all()
+    return success([item.to_dict() for item in items])
+
+@inheritor_bp.route("/young", methods=["GET"])
+def get_young():
+    name = request.args.get("name", "").strip()
+    query = Inheritor.query.filter_by(level="新锐")
+    if name:
+        query = query.filter(Inheritor.name.contains(name))
+    items = query.all()
+    return success([item.to_dict() for item in items])
 
 @inheritor_bp.route("/detail/<int:inheritor_id>", methods=["GET"])
 def inheritor_detail(inheritor_id):
-    """获取传承人详情"""
     inheritor = Inheritor.query.get(inheritor_id)
     if not inheritor:
         return fail("传承人不存在", 404)
-
     return success(inheritor.to_dict())
+
+@inheritor_bp.route("/video/<int:inheritor_id>", methods=["GET"])
+def get_video_url(inheritor_id):
+    inheritor = Inheritor.query.get(inheritor_id)
+    if not inheritor or not inheritor.video_url:
+        return fail("视频不存在", 404)
+    return success({"videoUrl": inheritor.video_url})
+
+# ---------- 管理员后台管理接口 ----------
+@inheritor_bp.route("/admin/list", methods=["GET"])
+@admin_required
+def admin_list(current_user):
+    page = request.args.get("page", 1, type=int)
+    size = request.args.get("size", 10, type=int)
+    keyword = request.args.get("keyword", "").strip()
+    query = Inheritor.query
+    if keyword:
+        query = query.filter(Inheritor.name.contains(keyword))
+    paginated = query.order_by(Inheritor.id.asc()).paginate(page=page, per_page=size, error_out=False)
+    return success({
+        "total": paginated.total,
+        "pages": paginated.pages,
+        "current": page,
+        "list": [item.to_dict() for item in paginated.items]
+    })
+
+@inheritor_bp.route("/admin/add", methods=["POST"])
+@admin_required
+def admin_add(current_user):
+    data = request.get_json(silent=True) or {}
+    name = data.get("name", "").strip()
+    if not name:
+        return fail("姓名不能为空")
+    inheritor = Inheritor(
+        name=name,
+        title=data.get("title", ""),
+        level=data.get("level", ""),
+        avatar=data.get("avatar", ""),
+        video_url=data.get("videoUrl", ""),
+        description=data.get("description", ""),
+        achievement=data.get("achievement", "")
+    )
+    db.session.add(inheritor)
+    db.session.commit()
+    return success(inheritor.to_dict(), "创建成功")
+
+@inheritor_bp.route("/admin/edit", methods=["POST"])
+@admin_required
+def admin_edit(current_user):
+    data = request.get_json(silent=True) or {}
+    inheritor_id = data.get("id")
+    if not inheritor_id:
+        return fail("id不能为空")
+    inheritor = Inheritor.query.get(inheritor_id)
+    if not inheritor:
+        return fail("传承人不存在", 404)
+    inheritor.name = data.get("name", inheritor.name)
+    inheritor.title = data.get("title", inheritor.title)
+    inheritor.level = data.get("level", inheritor.level)
+    inheritor.avatar = data.get("avatar", inheritor.avatar)
+    inheritor.video_url = data.get("videoUrl", inheritor.video_url)
+    inheritor.description = data.get("description", inheritor.description)
+    inheritor.achievement = data.get("achievement", inheritor.achievement)
+    db.session.commit()
+    return success(inheritor.to_dict(), "更新成功")
+
+@inheritor_bp.route("/admin/delete", methods=["POST"])
+@admin_required
+def admin_delete(current_user):
+    data = request.get_json(silent=True) or {}
+    inheritor_id = data.get("id")
+    if not inheritor_id:
+        return fail("id不能为空")
+    inheritor = Inheritor.query.get(inheritor_id)
+    if not inheritor:
+        return fail("传承人不存在", 404)
+    db.session.delete(inheritor)
+    db.session.commit()
+    return success(None, "删除成功")

@@ -157,7 +157,7 @@ class Knowledge(db.Model):
     source = db.Column(db.String(50), default="manual", comment="来源：manual/ai/master/system")
     created_at = db.Column(db.DateTime, default=datetime.utcnow, comment="创建时间")
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment="更新时间")
-
+    status = db.Column(db.String(20), default='published', comment='状态：published/draft/pending/rejected')
     def to_dict(self):
         """知识库序列化"""
         return {
